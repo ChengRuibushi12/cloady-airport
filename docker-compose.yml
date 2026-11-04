@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  airport:
+    build: .
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - UUID=d342d11e-d424-4583-b36e-524ab1f0afa4
+      - WS_PATH=airport
+      - NODE_NAME=Cloady-Free-Node
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
