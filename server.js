@@ -1,6 +1,7 @@
 const http = require('http');
 const net = require('net');
 const fs = require('fs');
+const path = require('path');
 const { spawn } = require('child_process');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
@@ -8,6 +9,47 @@ const UUID = process.env.UUID || 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 const WS_PATH = (process.env.WS_PATH || 'airport').replace(/^\/+/, '');
 const NODE_NAME = process.env.NODE_NAME || 'Cloady-Free-Node';
 const XRAY_PORT = 10000;
+
+// Usage tracking: monthly traffic counters persisted in ./usage.json
+const USAGE_FILE = path.join(__dirname, 'usage.json');
+const USAGE_TOTAL = 10737418240;
+function currentMonth() {
+  return new Date().toISOString().slice(0, 7);
+}
+let usage = { month: currentMonth(), upload: 0, download: 0 };
+let usageDirty = false;
+function saveUsage() {
+  try {
+    fs.writeFileSync(USAGE_FILE, JSON.stringify(usage));
+    usageDirty = false;
+  } catch (e) {
+    console.warn('[Airport] Usage save notice:', e.message);
+  }
+}
+function resetUsageIfNewMonth() {
+  if (usage.month !== currentMonth()) {
+    usage = { month: currentMonth(), upload: 0, download: 0 };
+    saveUsage();
+  }
+}
+function loadUsage() {
+  try {
+    const data = JSON.parse(fs.readFileSync(USAGE_FILE, 'utf8'));
+    if (data && typeof data.upload === 'number' && typeof data.download === 'number') {
+      usage = { month: typeof data.month === 'string' ? data.month : currentMonth(), upload: data.upload, download: data.download };
+    }
+  } catch (e) {
+    // Missing or corrupt usage file: start from zero.
+  }
+  resetUsageIfNewMonth();
+}
+loadUsage();
+setInterval(() => {
+  resetUsageIfNewMonth();
+  if (usageDirty) {
+    saveUsage();
+  }
+}, 15000);
 
 // 1. 生成并启动 Xray 进程
 const xrayConfig = {
@@ -128,10 +170,14 @@ const server = http.createServer((req, res) => {
   // 订阅接口: /clash, /sub, /clash.yaml
   if (pathname === '/clash' || pathname === '/sub' || pathname === '/clash.yaml') {
     const yaml = generateClashYaml(domainOnly);
+    resetUsageIfNewMonth();
+    if (usageDirty) {
+      saveUsage();
+    }
     res.writeHead(200, {
       'Content-Type': 'text/yaml; charset=utf-8',
       'Content-Disposition': 'inline; filename="clash.yaml"',
-      'Subscription-Userinfo': 'upload=0; download=0; total=214748364800; expire=0',
+      'Subscription-Userinfo': `upload=${usage.upload}; download=${usage.download}; total=${USAGE_TOTAL}; expire=0`,
       'Profile-Update-Interval': '24'
     });
     res.end(yaml);
@@ -361,6 +407,14 @@ server.on('upgrade', (req, clientSocket, head) => {
       }
       clientSocket.pipe(proxySocket);
       proxySocket.pipe(clientSocket);
+      clientSocket.on('data', (chunk) => {
+        usage.upload += chunk.length;
+        usageDirty = true;
+      });
+      proxySocket.on('data', (chunk) => {
+        usage.download += chunk.length;
+        usageDirty = true;
+      });
     });
 
     proxySocket.on('error', (err) => {
